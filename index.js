@@ -1,49 +1,51 @@
 import * as fs from 'fs';
-import { fetchStockPage, fetchStockItem } from './fetchUtils.js';
-import { generateShopItemObject, parseXML, buildXML } from './xmlUtils.js';
+import { fetchStockPage } from './fetchUtils.js';
 import { getLastSyncTime, setLastSyncTime } from './database.js';
+import { DOMParser, XMLSerializer } from 'xmldom';
+import { generateShopItemObject } from './xmlUtils.js';
+import { DateTime } from 'luxon';
 
 const LIMIT = 5;
 
 async function generateXML() {
   const startTime = Date.now();
   const outputFile = 'shoptet_stock.xml';
-  const isntFirstSync = fs.existsSync(outputFile);
-  const lastSyncTime = new Date(getLastSyncTime());
+  const isFirstSync = !fs.existsSync(outputFile);
+  const lastSyncTime = isFirstSync ? false : getLastSyncTime();
 
-  const writeStream = fs.createWriteStream(outputFile, { encoding: 'utf8' });
-
-  let shopXML = { SHOP: [] };
-
-  if (isntFirstSync) {
-    const xmlData = fs.readFileSync(outputFile, 'utf8');
-    shopXML = await parseXML(xmlData);
+  if (isFirstSync) {
+    fs.appendFileSync(outputFile, '');
   }
 
-  if (!isntFirstSync) {
-    writeStream.write('<?xml version="1.0" encoding="utf-8"?>\n');
+  let xmlData = fs.readFileSync(outputFile, 'utf-8');
+
+  if (!xmlData) {
+    xmlData = '<SHOP></SHOP>';
+  }
+
+  const writeStream = fs.createWriteStream(outputFile, {
+    encoding: 'utf8',
+  });
+
+  let shopXML = new DOMParser().parseFromString(xmlData, 'text/xml');
+  let shopElement = shopXML.getElementsByTagName('SHOP')[0];
+  if (!shopElement) {
+    shopElement = shopXML.createElement('SHOP');
+    shopXML.appendChild(shopElement); 
   }
 
   let start = 0;
   let pageCount = 0;
+
   while (pageCount < 5) {
-    const items = await fetchStockPage(start, LIMIT);
+    let items = await fetchStockPage(start, LIMIT, lastSyncTime);
     if (items.length === 0) break;
 
     for (const item of items) {
-      if (!isntFirstSync) {
-        const itemObject = generateShopItemObject(item);
-        shopXML.SHOP.push(itemObject);
-      } else {
-        const detailedItem = await fetchStockItem(item['sklad@ref']);
-        const itemLastUpdate = new Date(
-          detailedItem.winstrom.sklad[0].lastUpdate
-        );
-        if (itemLastUpdate.getTime() > lastSyncTime.getTime() && !isFirstSync) {
-          const itemObject = generateShopItemObject(item);
-          shopXML.SHOP.push(itemObject);
-        }
-      }
+      const itemObject = generateShopItemObject(item); 
+
+      let itemNode = new DOMParser().parseFromString(itemObject, 'text/xml');
+      shopElement.appendChild(itemNode);
     }
 
     start += items.length;
@@ -52,9 +54,10 @@ async function generateXML() {
     if (items.length < LIMIT) break;
   }
 
-  const xmlContent = buildXML(shopXML);
+  const xmlContent = new XMLSerializer().serializeToString(shopXML);
   writeStream.write(xmlContent);
   writeStream.end();
+
   const endTime = (Date.now() - startTime) / 1000;
   console.log(
     `XML successfully generated in ${Math.floor(
@@ -63,11 +66,8 @@ async function generateXML() {
   );
 }
 
-// generateXML()
-//   .then(() => setLastSyncTime(Date.now()))
-//   .catch((err) => console.error('Error:', err));
-fetchStockPage(0, 5).then((data) => {
-  data.forEach((item) => {
-    console.log(item.lastUpdate) // UNDEFINED
-  })
-})
+// setLastSyncTime(DateTime.now().toFormat("yyyy-MM-dd'T'HH:mm:ss"))
+// setLastSyncTime('2024-01-01T13:01:01');
+generateXML()
+  .then(() => setLastSyncTime(DateTime.now().toFormat("yyyy-MM-dd'T'HH:mm:ss")))
+  .catch((err) => console.error('Error:', err));
